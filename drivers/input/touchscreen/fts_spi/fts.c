@@ -8508,7 +8508,7 @@ static int fts_probe(struct spi_device *client)
 	error = fts_ts_check_panel(dp);
 	if (error == -EPROBE_DEFER) {
 		logError(1, "%s Can't find panel\n", tag);
-		/*goto ProbeErrorExit_1;*/
+		goto ProbeErrorExit_1;
 	}
 #endif
 	logError(0, "%s SET GPIOS: \n", tag);
