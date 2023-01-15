@@ -236,8 +236,13 @@ void gpio_set_ven(struct nfc_dev *nfc_dev, int value)
 
 		gpio_set_value(nfc_gpio->ven, value);
 		/* hardware dependent delay */
-		usleep_range(NFC_GPIO_SET_WAIT_TIME_USEC,
-			     NFC_GPIO_SET_WAIT_TIME_USEC + 100);
+		if (value == 0) {
+			usleep_range(2 * NFC_GPIO_SET_WAIT_TIME_USEC,
+				     2 * NFC_GPIO_SET_WAIT_TIME_USEC + 100);
+		} else {
+			usleep_range(NFC_GPIO_SET_WAIT_TIME_USEC,
+				     NFC_GPIO_SET_WAIT_TIME_USEC + 100);
+		}
 	}
 }
 
@@ -592,6 +597,29 @@ int nfc_dev_open(struct inode *inode, struct file *filp)
 
 	mutex_unlock(&nfc_dev->dev_ref_mutex);
 
+	return 0;
+}
+
+int nfc_dev_flush(struct file *pfile, fl_owner_t id)
+{
+	struct nfc_dev *nfc_dev = pfile->private_data;
+
+	if (!nfc_dev)
+		return -ENODEV;
+	/*
+	 * release blocked user thread waiting for pending read during close
+	 */
+	if (!mutex_trylock(&nfc_dev->read_mutex)) {
+		nfc_dev->release_read = true;
+		nfc_dev->nfc_disable_intr(nfc_dev);
+		wake_up(&nfc_dev->read_wq);
+		pr_debug("%s: waiting for release of blocked read\n", __func__);
+		mutex_lock(&nfc_dev->read_mutex);
+		nfc_dev->release_read = false;
+	} else {
+		pr_debug("%s: read thread already released\n", __func__);
+	}
+	mutex_unlock(&nfc_dev->read_mutex);
 	return 0;
 }
 
