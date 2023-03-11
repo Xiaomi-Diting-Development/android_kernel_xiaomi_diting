@@ -25,6 +25,7 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/qpnp/qpnp-pbs.h>
+#include <linux/power_supply.h>
 
 /* status register definitions in HAPTICS_CFG module */
 #define HAP_CFG_REVISION2_REG			0x01
@@ -490,6 +491,7 @@ struct haptics_chip {
 	struct regulator		*hpwr_vreg;
 	struct hrtimer			hbst_off_timer;
 	int				fifo_empty_irq;
+	bool				hboost_quick_off;
 	u32				hpwr_voltage_mv;
 	u32				effects_count;
 	u32				cfg_addr_base;
@@ -1416,8 +1418,6 @@ static int haptics_enable_play(struct haptics_chip *chip, bool en)
 		return rc;
 
 	val = play->pattern_src;
-	if (play->brake && !play->brake->disabled)
-		val |= BRAKE_EN_BIT;
 
 	if (en)
 		val |= PLAY_EN_BIT;
@@ -1949,7 +1949,7 @@ static int haptics_load_constant_effect(struct haptics_chip *chip, u8 amplitude)
 		goto unlock;
 
 	/* Always enable LRA auto resonance for DIRECT_PLAY */
-	rc = haptics_enable_autores(chip, !chip->config.is_erm);
+	rc = haptics_enable_autores(chip, false);
 	if (rc < 0)
 		goto unlock;
 
@@ -2040,7 +2040,7 @@ static int haptics_init_custom_effect(struct haptics_chip *chip)
 	chip->custom_effect->pattern = NULL;
 	chip->custom_effect->brake = NULL;
 	chip->custom_effect->id = UINT_MAX;
-	chip->custom_effect->vmax_mv = chip->config.vmax_mv;
+	chip->custom_effect->vmax_mv = 9000;
 	chip->custom_effect->t_lra_us = chip->config.t_lra_us;
 	chip->custom_effect->src = FIFO;
 	chip->custom_effect->auto_res_disable = true;
@@ -2156,7 +2156,11 @@ static int haptics_load_custom_effect(struct haptics_chip *chip,
 
 	play->effect = chip->custom_effect;
 	play->brake = NULL;
-	play->vmax_mv = (magnitude * chip->custom_effect->vmax_mv) / 0x7fff;
+	/*
+	 * make vibration intensity could changed larger, 0x4000
+	 * is computed by 0x7fff - 0x3fff
+	 */
+	play->vmax_mv = (magnitude - 0x3fff) * chip->custom_effect->vmax_mv / 0x4000;
 	rc = haptics_set_vmax_mv(chip, play->vmax_mv);
 	if (rc < 0)
 		goto cleanup;
@@ -2435,6 +2439,17 @@ static int haptics_erase(struct input_dev *dev, int effect_id)
 	struct haptics_chip *chip = input_get_drvdata(dev);
 	struct haptics_play_info *play = &chip->play;
 	int rc;
+
+	
+	if (chip->hboost_quick_off) {
+		rc = haptics_boost_vreg_enable(chip, false);
+		if (rc < 0)
+			dev_err(chip->dev, "hboost quick off failed, rc=%d\n", rc);
+		else
+			dev_info(chip->dev, "hboost quick off\n");
+		chip->hboost_quick_off = false;
+		return 0;
+	}
 
 	mutex_lock(&play->lock);
 	if ((play->pattern_src == FIFO) &&
@@ -4407,7 +4422,7 @@ static ssize_t lra_frequency_hz_show(struct class *c,
 	if (chip->config.cl_t_lra_us == 0)
 		return -EINVAL;
 
-	cl_f_lra = USEC_PER_SEC / chip->config.cl_t_lra_us;
+	cl_f_lra = USEC_PER_SEC * 10 / chip->config.cl_t_lra_us;
 	return scnprintf(buf, PAGE_SIZE, "%d Hz\n", cl_f_lra);
 }
 static CLASS_ATTR_RO(lra_frequency_hz);
@@ -4528,6 +4543,7 @@ static int haptics_probe(struct platform_device *pdev)
 	if (chip->effects_count != 0) {
 		input_set_capability(input_dev, EV_FF, FF_PERIODIC);
 		input_set_capability(input_dev, EV_FF, FF_CUSTOM);
+		input_set_capability(input_dev, EV_FF, FF_DAMPER);
 	}
 
 	if (chip->effects_count < MAX_EFFECT_COUNT)
