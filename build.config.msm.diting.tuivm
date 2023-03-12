@@ -5,7 +5,7 @@
 
 ################################################################################
 ## Variant setup
-MSM_ARCH=waipio_tuivm
+MSM_ARCH=diting_tuivm
 VARIANTS=(defconfig debug_defconfig)
 [ -z "${VARIANT}" ] && VARIANT=debug_defconfig
 
